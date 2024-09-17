@@ -8,10 +8,10 @@ from io import BytesIO
 server_url = 'http://localhost:5000/predict_mask'
 
 # Path to the local image file to test
-image_path = 'examples/images/truck.jpg'
+image_path = 'examples/images/dicom.jpg'
 
 # Input point and label for the prediction
-input_point = [500, 375]  # Example point (adjust as necessary)
+input_point = [100, 200] #[500, 375]  # Example point (adjust as necessary)
 input_label = 1  # Positive label for the input point
 
 # Open and display the input image

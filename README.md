@@ -156,3 +156,7 @@ docker run -it \
 - **Logging**: Check Docker container logs for any runtime errors or warnings to debug issues related to model loading or API requests.
 
 Feel free to customize the Docker commands and scripts to fit your specific use case or environment setup. If you encounter further issues, refer to the SAM2 and Flask documentation for more detailed guidance.
+
+Example of running Python test code to display masks:
+
+![alt text](image_test.png)
