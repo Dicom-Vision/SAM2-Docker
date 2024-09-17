@@ -1,5 +1,5 @@
 # Use an NVIDIA CUDA image as the base
-FROM nvidia/cuda:12.6.0-devel-ubuntu20.04
+FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
 
 # Set up environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -51,6 +51,7 @@ WORKDIR /home/user
 RUN git clone https://github.com/facebookresearch/segment-anything-2 && \
     cd segment-anything-2 && \
     python3 -m pip install -e . -v && \
+    python3 -m pip install flask && \
     python3 -m pip install -e ".[demo]" && \
     cd checkpoints && ./download_ckpts.sh && cd ..
 
