@@ -4,73 +4,136 @@ import numpy as np
 import torch
 from flask import Flask, request, jsonify, send_file
 from PIL import Image
-import matplotlib.pyplot as plt
 import sam2
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from sam2.build_sam import build_sam2_video_predictor
+import uuid
+import tempfile
+import os
+inference_states = {}
 
 app = Flask(__name__)
 
-# Load the SAM2 model on server start
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Use bfloat16 precision
+torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+
+# Enable TensorFloat-32 (if applicable)
+if torch.cuda.get_device_properties(0).major >= 8:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 root_path = os.path.dirname(os.path.dirname(sam2.__file__))
-
+# Load the SAM 2 model
 sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
-sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
-predictor = SAM2ImagePredictor(sam2_model)
+predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
-@app.route('/predict_mask', methods=['POST'])
-def predict_mask():
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image file provided'}), 400
+from flask import Flask, request, jsonify, send_file
+import json
 
-    image_file = request.files['image']
-    input_point = request.form.get('input_point', None)
-    input_label = request.form.get('input_label', 1)
 
-    if input_point is None:
-        return jsonify({'error': 'No input point provided'}), 400
+@app.route('/initialize_video', methods=['POST'])
+def initialize_video():
+    # Get the images from the request
+    image_files = request.files.getlist('images')
+    if not image_files:
+        return jsonify({'error': 'No images provided'}), 400
 
-    # Convert input_point back to a list of integers
-    input_point = [int(coord) for coord in input_point.split(',')]
-    input_point = np.array([input_point])  # Convert to the required NumPy array format
+    # Save images to a temporary directory
+    temp_dir = tempfile.mkdtemp()
+    for idx, image_file in enumerate(image_files):
+        image_path = os.path.join(temp_dir, f"{idx}.jpg")
+        image = Image.open(image_file).convert("RGB")
+        image.save(image_path)
 
-    # Process the image
-    image = Image.open(image_file)
-    image = np.array(image.convert("RGB"))
+    # Initialize the inference state
+    session_id = str(uuid.uuid4())
+    inference_state = predictor.init_state(video_path=temp_dir)
+    inference_states[session_id] = {
+        'inference_state': inference_state,
+        'temp_dir': temp_dir
+    }
 
-    # Set image in the predictor
-    predictor.set_image(image)
+    return jsonify({'session_id': session_id})
 
-    # Convert the input point into a NumPy array and input label
-    input_label = np.array([int(input_label)])
+@app.route('/add_points', methods=['POST'])
+def add_points():
+    # Get data from the request JSON
+    data = request.get_json()
+    if data is None:
+        return jsonify({'error': 'No data provided'}), 400
+    session_id = data.get('session_id')
+    frame_idx = data.get('frame_idx')
+    obj_id = data.get('obj_id')
+    points = data.get('points')
+    labels = data.get('labels')
+    if session_id is None or frame_idx is None or obj_id is None or points is None or labels is None:
+        return jsonify({'error': 'All fields are required'}), 400
 
-    # Predict masks
-    masks, scores, _ = predictor.predict(
-        point_coords=input_point,
-        point_labels=input_label,
-        multimask_output=True
+    # Retrieve the inference state
+    state_info = inference_states.get(session_id)
+    if state_info is None:
+        return jsonify({'error': 'Invalid session_id'}), 400
+    inference_state = state_info['inference_state']
+
+    # Convert to numpy arrays
+    points = np.array(points, dtype=np.float32)
+    labels = np.array(labels, dtype=np.int32)
+
+    # Add new points to the inference state
+    _, out_obj_ids, out_mask_logits = predictor.add_new_points(
+        inference_state=inference_state,
+        frame_idx=frame_idx,
+        obj_id=obj_id,
+        points=points,
+        labels=labels,
     )
 
-    # Sort by scores
-    sorted_ind = np.argsort(scores)[::-1]
-    masks = masks[sorted_ind]
-    scores = scores[sorted_ind]
+    # Optionally return the mask for the current frame
+    mask = (out_mask_logits[0] > 0).cpu().numpy()[0]
+    mask_image = Image.fromarray((mask * 255).astype(np.uint8))
 
-    # Generate mask image
-    mask_image = masks[0]  # Use the highest score mask
-    mask_image = mask_image.astype(np.uint8) * 255
-    mask_pil = Image.fromarray(mask_image)
-
-    # Return the generated mask as an image
+    # Send the mask image
     img_io = io.BytesIO()
-    mask_pil.save(img_io, 'PNG')
+    mask_image.save(img_io, 'PNG')
     img_io.seek(0)
-
     return send_file(img_io, mimetype='image/png')
 
+
+@app.route('/propagate_masks', methods=['POST'])
+def propagate_masks():
+    # Get data from the request JSON
+    data = request.get_json()
+    if data is None:
+        return jsonify({'error': 'No data provided'}), 400
+    session_id = data.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    # Retrieve the inference state
+    state_info = inference_states.get(session_id)
+    if state_info is None:
+        return jsonify({'error': 'Invalid session_id'}), 400
+    inference_state = state_info['inference_state']
+    temp_dir = state_info['temp_dir']
+
+    # Propagate masks
+    video_segments = {}
+    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+        masks = {}
+        for i, out_obj_id in enumerate(out_obj_ids):
+            mask = (out_mask_logits[i] > 0).cpu().numpy()
+            masks[out_obj_id] = mask.tolist()
+        video_segments[out_frame_idx] = masks
+
+    # Clean up temporary files
+    import shutil
+    shutil.rmtree(temp_dir)
+    del inference_states[session_id]
+
+    return jsonify({'video_segments': video_segments})
 
 
 if __name__ == '__main__':
