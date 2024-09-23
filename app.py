@@ -95,9 +95,11 @@ def add_points():
     )
 
     # Optionally return the mask for the current frame
-    mask = (out_mask_logits[0] > 0).cpu().numpy()[0]
+    mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
+    for i, obj_id in enumerate(out_obj_ids):
+        mask = mask + ((out_mask_logits[i] > 0).cpu().numpy()[0] * (1+obj_id))
     # Convert the mask to a NIfTI file
-     # Convert the mask to a NIfTI file
+    # Convert the mask to a NIfTI file
     affine = np.eye(4)  # You can set an appropriate affine if necessary
     nii_img = nib.Nifti1Image(mask.astype(np.float32), affine)
 
@@ -117,22 +119,26 @@ def add_points():
                      mimetype='application/gzip')
 
 
-def convert_masks_to_nii(out_masks):
+def convert_masks_to_nii(video_segments):
     """
-    Convert the propagated masks to a NIfTI (.nii.gz) file.
-    :param out_masks: List of mask arrays
+    Convert the propagated masks to a NIfTI (.nii.gz) file from video segments.
+    :param video_segments: Dictionary with frame indices as keys and masks as values
     :return: Binary content of the .nii.gz file
     """
     # Assuming the shape of the reference image is the same as the masks
-    print("mask shape", len(out_masks), out_masks[0].shape)
-    object_ids_len = len(out_masks[0]) # todo add different values for different objects
-    print("# of objects: ", object_ids_len)
-    ref_img_shape = out_masks[0].shape
-    combined_mask = np.zeros((len(out_masks), *ref_img_shape), dtype=np.uint8)
+    print("Number of frames: ", len(video_segments))
+    
+    # Extract the shape of the first mask for dimensions
+    first_frame_masks = next(iter(video_segments.values()))  # Get masks from the first frame
+    ref_img_shape = first_frame_masks[next(iter(first_frame_masks))].shape  # Get the shape of the first mask
+    combined_mask = np.zeros((len(video_segments), *ref_img_shape), dtype=np.uint8)
 
     # Combine all the mask arrays into one
-    for i, mask in enumerate(out_masks):
-        combined_mask[i] = mask
+    for out_frame_idx, masks in video_segments.items():
+        print(masks.keys(), out_frame_idx)
+        for obj_id, mask in masks.items():
+            # Place the mask values directly into the combined mask
+            combined_mask[out_frame_idx % len(combined_mask)] = np.where(mask > 0, obj_id + 1, combined_mask[out_frame_idx % len(combined_mask)])
 
     # Create a Nifti1Image with the combined mask
     affine = np.eye(4)  # Identity affine matrix, replace with actual affine if available
@@ -168,14 +174,11 @@ def propagate_masks():
 
     # Propagate masks
     video_segments = {}
-    out_masks = []
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-        masks = {}
-        for i, out_obj_id in enumerate(out_obj_ids):
-            mask = (out_mask_logits[i] > 0).cpu().numpy()
-            masks[out_obj_id] = mask.tolist()
-            out_masks.append(mask)  # Collect masks for nii conversion
-        video_segments[out_frame_idx] = masks
+        video_segments[out_frame_idx] = {
+            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+            for i, out_obj_id in enumerate(out_obj_ids)
+        }
 
     # Clean up temporary files
     import shutil
@@ -183,7 +186,7 @@ def propagate_masks():
     del inference_states[session_id] # TODO set a timer instead
 
     # Convert masks to .nii and return as binary content
-    nii_file_content = convert_masks_to_nii(out_masks)
+    nii_file_content = convert_masks_to_nii(video_segments)
 
     # Send the .nii file as a binary response
     return send_file(BytesIO(nii_file_content),

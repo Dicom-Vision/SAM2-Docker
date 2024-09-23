@@ -32,7 +32,7 @@ def initialize_video():
         print(f"Failed to initialize video: {response.text}")
         return None
 
-def visualize_overlay_from_nii(nii_file_path):
+def visualize_overlay_from_nii(nii_file_path, frame_idx):
     """
     Loads and visualizes the overlay mask from a NIfTI file on the input image.
     """
@@ -40,11 +40,9 @@ def visualize_overlay_from_nii(nii_file_path):
     nii_img = nib.load(nii_file_path)
     nii_data = nii_img.get_fdata()
 
-    # Assuming the mask is in the first slice for visualization
-    mask_slice = nii_data[:, :]  # Change this index as needed for your application
-
+    mask_slice = nii_data[0, :, :]
     # Load the input image
-    input_image_path = os.path.join(video_images_dir, '0.jpg')  # Assuming first frame is '0.jpg'
+    input_image_path = os.path.join(video_images_dir, f'{frame_idx}.jpg')  # Assuming first frame is '0.jpg'
     input_image = Image.open(input_image_path)
     input_image_np = np.array(input_image)
 
@@ -54,18 +52,18 @@ def visualize_overlay_from_nii(nii_file_path):
     plt.imshow(mask_slice, alpha=0.5, cmap='jet')  # Overlay with transparency
     plt.title("Input Image with Overlayed Mask from NIfTI")
     plt.axis('off')
-    plt.show()
+    #plt.show()
 
 
 # Step 2: Test the '/add_points' endpoint (positive and negative clicks)
-def add_points(session_id, input_points, labels):
+def add_points(session_id, input_points, labels, object_id=0, frame_idx=0):
 
     data = {
         'session_id': session_id,
         'points': input_points,  # Format: [[x1, y1], [x2, y2], ...]
         'labels': labels,  # Format: [label1, label2, ...] where 1 = positive, 0 = negative
-        'obj_id': 0,
-        'frame_idx': 0
+        'obj_id': object_id,
+        'frame_idx': frame_idx
     }
     
     response = requests.post(f'{server_url}/add_points', json=data)
@@ -77,7 +75,7 @@ def add_points(session_id, input_points, labels):
             f.write(response.content)
 
         # Visualize the overlay mask from the NIfTI file
-        visualize_overlay_from_nii(nii_file_path)
+        visualize_overlay_from_nii(nii_file_path, frame_idx)
 
     else:
         print(f"Failed to add points: {response.text}")
@@ -91,29 +89,6 @@ def show_mask(mask, ax, obj_id=None):
     if obj_id is not None:
         ax.text(10, 10, f"Object {obj_id}", bbox=dict(facecolor='yellow', alpha=0.5))
 
-
-def visualize_nii_file(nii_file_path):
-    """
-    Loads and visualizes a NIfTI file slice by slice.
-    """
-    # Load the NIfTI image
-    nii_img = nib.load(nii_file_path)
-
-    # Get image data as a NumPy array
-    nii_data = nii_img.get_fdata()
-
-    # Visualize each slice (assuming a 3D array)
-    num_slices = nii_data.shape[0]
-    for i in range(num_slices):
-        plt.figure(figsize=(6, 4))
-        plt.title(f"Slice {i}")
-        plt.imshow(nii_data[i, 0, :, :], cmap='gray')
-        plt.axis('off')
-
-        # Save the visualization of the slice
-        output_slice_path = os.path.join(output_nii_dir, f'{i}_slice.png')
-        plt.savefig(output_slice_path, bbox_inches='tight', pad_inches=0)
-        plt.close()
 
 def create_overlay_video(session_id):
     nii_file_path = os.path.join(output_nii_dir, f'{session_id}_masks.nii.gz')  # Path to the saved NIfTI file
@@ -198,10 +173,13 @@ if __name__ == "__main__":
 
     if session_id:
         # Add points (Example: Adding two points with positive and negative labels)
-        input_points = [[100, 200], [150, 250]]  # Two example points
-        labels = [1, 0]  # Positive (1) and Negative (0)
-        add_points(session_id, input_points, labels)
-        
+        input_points = [[100, 200]]
+        labels = [1]  # Positive (1) and Negative (0)
+        add_points(session_id, input_points, labels, object_id=1, frame_idx=3)
+        input_points = [[260, 50]]  
+        labels = [1]  # Positive (1) and Negative (0)
+        add_points(session_id, input_points, labels,  frame_idx=3)
+        #breakpoint()
         # Propagate masks
         propagate_masks(session_id)
         
