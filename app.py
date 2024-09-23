@@ -11,6 +11,12 @@ from sam2.build_sam import build_sam2_video_predictor
 import uuid
 import tempfile
 import os
+from io import BytesIO
+import nibabel as nib
+import json
+from tempfile import NamedTemporaryFile
+
+
 inference_states = {}
 
 app = Flask(__name__)
@@ -29,9 +35,6 @@ root_path = os.path.dirname(os.path.dirname(sam2.__file__))
 sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
-
-from flask import Flask, request, jsonify, send_file
-import json
 
 
 @app.route('/initialize_video', methods=['POST'])
@@ -93,13 +96,57 @@ def add_points():
 
     # Optionally return the mask for the current frame
     mask = (out_mask_logits[0] > 0).cpu().numpy()[0]
-    mask_image = Image.fromarray((mask * 255).astype(np.uint8))
+    # Convert the mask to a NIfTI file
+     # Convert the mask to a NIfTI file
+    affine = np.eye(4)  # You can set an appropriate affine if necessary
+    nii_img = nib.Nifti1Image(mask.astype(np.float32), affine)
 
-    # Send the mask image
-    img_io = io.BytesIO()
-    mask_image.save(img_io, 'PNG')
-    img_io.seek(0)
-    return send_file(img_io, mimetype='image/png')
+    # Create a temporary file for the NIfTI image
+    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as temp_file:
+        temp_file_path = temp_file.name
+        nib.save(nii_img, temp_file_path)
+
+    # Return the NIfTI file
+    # Read the file content into memory
+    with open(temp_file_path, 'rb') as f:
+        nii_file_content = f.read()
+
+    return send_file(BytesIO(nii_file_content),
+                     download_name='masks.nii.gz',
+                     as_attachment=True,
+                     mimetype='application/gzip')
+
+
+def convert_masks_to_nii(out_masks):
+    """
+    Convert the propagated masks to a NIfTI (.nii.gz) file.
+    :param out_masks: List of mask arrays
+    :return: Binary content of the .nii.gz file
+    """
+    # Assuming the shape of the reference image is the same as the masks
+    print("mask shape", len(out_masks), out_masks[0].shape)
+    object_ids_len = len(out_masks[0]) # todo add different values for different objects
+    print("# of objects: ", object_ids_len)
+    ref_img_shape = out_masks[0].shape
+    combined_mask = np.zeros((len(out_masks), *ref_img_shape), dtype=np.uint8)
+
+    # Combine all the mask arrays into one
+    for i, mask in enumerate(out_masks):
+        combined_mask[i] = mask
+
+    # Create a Nifti1Image with the combined mask
+    affine = np.eye(4)  # Identity affine matrix, replace with actual affine if available
+    nii_image = nib.Nifti1Image(combined_mask, affine)
+
+    # Create a temporary file to save the NIfTI image
+    with NamedTemporaryFile(suffix='.nii.gz') as tmp_file:
+        nib.save(nii_image, tmp_file.name)  # Save to the temporary file
+
+        # Read the file content into memory
+        with open(tmp_file.name, 'rb') as f:
+            nii_file_content = f.read()
+
+    return nii_file_content
 
 
 @app.route('/propagate_masks', methods=['POST'])
@@ -121,19 +168,29 @@ def propagate_masks():
 
     # Propagate masks
     video_segments = {}
+    out_masks = []
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
         masks = {}
         for i, out_obj_id in enumerate(out_obj_ids):
             mask = (out_mask_logits[i] > 0).cpu().numpy()
             masks[out_obj_id] = mask.tolist()
+            out_masks.append(mask)  # Collect masks for nii conversion
         video_segments[out_frame_idx] = masks
 
     # Clean up temporary files
     import shutil
     shutil.rmtree(temp_dir)
-    del inference_states[session_id]
+    del inference_states[session_id] # TODO set a timer instead
 
-    return jsonify({'video_segments': video_segments})
+    # Convert masks to .nii and return as binary content
+    nii_file_content = convert_masks_to_nii(out_masks)
+
+    # Send the .nii file as a binary response
+    return send_file(BytesIO(nii_file_content),
+                     download_name='masks.nii.gz',
+                     as_attachment=True,
+                     mimetype='application/gzip')
+
 
 
 if __name__ == '__main__':

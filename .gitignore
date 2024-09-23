@@ -1,3 +1,5 @@
 __pycache__/
 examples/images/output
 examples/images/video/*.jpg
+output_nii_files
+*.mp4
