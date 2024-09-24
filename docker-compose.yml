@@ -4,11 +4,19 @@ services:
   web:
     build: .
     container_name: flask_app
-    command: gunicorn -b 0.0.0.0:8000 --workers=4 app:app
+    command: sh -c "cd /home/user/SAM2-Docker && gunicorn -b 0.0.0.0:5000 --workers=1 app:app"  # Run Flask directly
     volumes:
-      - .:/app
-    expose:
-      - "8000"
+      - ./SAM2-Docker:/home/user/SAM2-Docker  # Map current directory to /home/user in the container
+      - ./app.py:/home/user/SAM2-Docker/app.py
+    networks:
+      - flask_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   nginx:
     image: nginx:latest
@@ -19,3 +27,9 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - web
+    networks:
+      - flask_network
+
+networks:
+  flask_network:
+    driver: bridge

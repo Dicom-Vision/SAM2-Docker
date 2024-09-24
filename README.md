@@ -108,6 +108,15 @@ docker run -it \
 
 Once the server is running, it will be accessible at [http://localhost:5000](http://localhost:5000).
 
+## Run Server With docker compose
+
+To run the Flask server using Docker, execute the following command:
+
+```docker compose up --build
+```
+
+Server will listen to port 80, change it if needed.
+
 ## Test Server
 
 To test the Flask server running inside Docker, use the following command to run the test client script:

@@ -10,7 +10,7 @@ import glob
 import nibabel as nib
 import re
 # Server URL (adjust if needed)
-server_url = 'http://localhost:5000'
+server_url = 'http://localhost:80' # change port number if needed
 
 # Path to the video images directory
 video_images_dir = 'examples/images/video/'
