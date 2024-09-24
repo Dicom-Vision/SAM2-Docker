@@ -16,8 +16,13 @@ import nibabel as nib
 import json
 from tempfile import NamedTemporaryFile
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 inference_states = {}
+scheduler = BackgroundScheduler()
+scheduler.start()
+
 
 app = Flask(__name__)
 
@@ -35,6 +40,30 @@ root_path = os.path.dirname(os.path.dirname(sam2.__file__))
 sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+
+
+# Helper function to delete session
+def delete_session(session_id):
+    if session_id in inference_states:
+        del inference_states[session_id]
+        print(f"Session {session_id} deleted due to timeout.")
+
+# Function to set or reset a session timer
+def set_or_reset_timer(session_id, timeout_seconds=300):
+    job_id = f"session_cleanup_{session_id}"
+    # Remove the existing job for this session if it exists
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    # Schedule a new job to delete the session after 'timeout_seconds'
+    scheduler.add_job(
+        delete_session,
+        trigger=IntervalTrigger(seconds=timeout_seconds),
+        id=job_id,
+        args=[session_id],
+        replace_existing=True
+    )
+
 
 
 @app.route('/initialize_video', methods=['POST'])
@@ -56,9 +85,10 @@ def initialize_video():
     inference_state = predictor.init_state(video_path=temp_dir)
     inference_states[session_id] = {
         'inference_state': inference_state,
-        'temp_dir': temp_dir
+        'temp_dir': temp_dir,
+        'n_frames': len(image_files)
     }
-
+    set_or_reset_timer(session_id)
     return jsonify({'session_id': session_id})
 
 @app.route('/add_points', methods=['POST'])
@@ -113,13 +143,14 @@ def add_points():
     with open(temp_file_path, 'rb') as f:
         nii_file_content = f.read()
 
+    set_or_reset_timer(session_id)
     return send_file(BytesIO(nii_file_content),
                      download_name='masks.nii.gz',
                      as_attachment=True,
                      mimetype='application/gzip')
 
 
-def convert_masks_to_nii(video_segments):
+def convert_masks_to_nii(video_segments, n_frames):
     """
     Convert the propagated masks to a NIfTI (.nii.gz) file from video segments.
     :param video_segments: Dictionary with frame indices as keys and masks as values
@@ -131,14 +162,13 @@ def convert_masks_to_nii(video_segments):
     # Extract the shape of the first mask for dimensions
     first_frame_masks = next(iter(video_segments.values()))  # Get masks from the first frame
     ref_img_shape = first_frame_masks[next(iter(first_frame_masks))].shape  # Get the shape of the first mask
-    combined_mask = np.zeros((len(video_segments), *ref_img_shape), dtype=np.uint8)
+    combined_mask = np.zeros((n_frames, *ref_img_shape), dtype=np.uint8)
 
     # Combine all the mask arrays into one
     for out_frame_idx, masks in video_segments.items():
-        print(masks.keys(), out_frame_idx)
         for obj_id, mask in masks.items():
             # Place the mask values directly into the combined mask
-            combined_mask[out_frame_idx % len(combined_mask)] = np.where(mask > 0, obj_id + 1, combined_mask[out_frame_idx % len(combined_mask)])
+            combined_mask[out_frame_idx] = np.where(mask > 0, obj_id + 1, combined_mask[out_frame_idx])
 
     # Create a Nifti1Image with the combined mask
     affine = np.eye(4)  # Identity affine matrix, replace with actual affine if available
@@ -174,11 +204,20 @@ def propagate_masks():
 
     # Propagate masks
     video_segments = {}
+        
     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
         video_segments[out_frame_idx] = {
             out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
             for i, out_obj_id in enumerate(out_obj_ids)
         }
+    start_frame_idx = min(video_segments.keys())
+    if start_frame_idx != 0:
+        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=start_frame_idx, reverse=True):
+            video_segments[out_frame_idx] = {
+                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                for i, out_obj_id in enumerate(out_obj_ids)
+            }
+
 
     # Clean up temporary files
     import shutil
@@ -186,14 +225,14 @@ def propagate_masks():
     del inference_states[session_id] # TODO set a timer instead
 
     # Convert masks to .nii and return as binary content
-    nii_file_content = convert_masks_to_nii(video_segments)
+    nii_file_content = convert_masks_to_nii(video_segments, state_info['n_frames'])
 
+    set_or_reset_timer(session_id)
     # Send the .nii file as a binary response
     return send_file(BytesIO(nii_file_content),
                      download_name='masks.nii.gz',
                      as_attachment=True,
                      mimetype='application/gzip')
-
 
 
 if __name__ == '__main__':

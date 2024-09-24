@@ -186,7 +186,7 @@ if __name__ == "__main__":
         # After propagating masks, you can use the saved voerlaid images to create a video using imageio
                 
         # Load image files
-        image_files = sorted(glob.glob(os.path.join(output_nii_dir, '*_slice.png')), key=natural_sort_key)
+        image_files = sorted(glob.glob(os.path.join(output_nii_dir, 'overlay_*.png')), key=natural_sort_key)
 
         # Ensure images exist
         if image_files:
