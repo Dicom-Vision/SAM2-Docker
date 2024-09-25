@@ -51,7 +51,7 @@ WORKDIR /home/user
 RUN git clone https://github.com/facebookresearch/segment-anything-2 && \
     cd segment-anything-2 && \
     python3 -m pip install -e . -v && \
-    python3 -m pip install flask imageio[ffmpeg] nibabel APScheduler gunicorn && \
+    python3 -m pip install flask imageio[ffmpeg] nibabel APScheduler gunicorn pydicom && \
     python3 -m pip install -e ".[demo]" && \
     cd checkpoints && ./download_ckpts.sh && cd ..
 

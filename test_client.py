@@ -10,7 +10,7 @@ import glob
 import nibabel as nib
 import re
 # Server URL (adjust if needed)
-server_url = 'http://localhost:80' # change port number if needed
+server_url = 'http://localhost:5000' # change port number if needed
 
 # Path to the video images directory
 video_images_dir = 'examples/images/video/'
@@ -18,19 +18,44 @@ output_images_dir = 'examples/images/output/'  # Directory to save overlaid imag
 image_files = [os.path.join(video_images_dir, f) for f in sorted([f for f in os.listdir(video_images_dir) if "jpg" in f], key=lambda x: int(x.split('.')[0])) if f.endswith('.jpg')]
 output_nii_dir = './output_nii_files'
 
-
-# Step 1: Test the '/initialize_video' endpoint
 def initialize_video():
-    files = [('images', open(img, 'rb')) for img in image_files]
+    # Specify the zip file containing the DICOM data
+    zip_file_path = os.path.join(os.getcwd(), 'test_data.zip')
 
-    response = requests.post(f'{server_url}/initialize_video', files=files)
-    if response.status_code == 200:
-        print("Video initialized successfully!")
-        session_id = response.json()['session_id']
-        return session_id
-    else:
-        print(f"Failed to initialize video: {response.text}")
+    # Ensure the file exists
+    if not os.path.exists(zip_file_path):
+        print(f"Zip file not found at {zip_file_path}")
         return None
+
+    # Print file size before sending to ensure it's non-zero
+    file_size = os.path.getsize(zip_file_path)
+    print(f"File size before sending: {file_size}")
+
+    if file_size == 0:
+        print("The zip file is empty!")
+        return None
+
+    # Prepare the file to be sent in the request
+    try:
+        with open(zip_file_path, 'rb') as f:
+            files = {'dcm_zip': f}
+            # Send the request to the server
+            response = requests.post(f'{server_url}/initialize_video', files=files)
+
+        # Handle the response
+        if response.status_code == 200:
+            print("Video initialized successfully!")
+            session_id = response.json()['session_id']
+            return session_id
+        else:
+            print(f"Failed to initialize video: {response.text}")
+            return None
+
+    except Exception as e:
+        print(f"Error while opening or sending file: {e}")
+        return None
+
+
 
 def visualize_overlay_from_nii(nii_file_path, frame_idx):
     """

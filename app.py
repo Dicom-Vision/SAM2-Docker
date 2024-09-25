@@ -15,10 +15,11 @@ from io import BytesIO
 import nibabel as nib
 import json
 from tempfile import NamedTemporaryFile
-
+import zipfile
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-
+import pydicom
+import glob
 inference_states = {}
 scheduler = BackgroundScheduler()
 scheduler.start()
@@ -26,6 +27,7 @@ scheduler.start()
 
 app = Flask(__name__)
 
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
 # Use bfloat16 precision
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
@@ -64,29 +66,89 @@ def set_or_reset_timer(session_id, timeout_seconds=300):
         replace_existing=True
     )
 
+@app.errorhandler(413)
+def file_too_large(e):
+    return jsonify({"error": "File is too large"}), 413
 
 
 @app.route('/initialize_video', methods=['POST'])
 def initialize_video():
-    # Get the images from the request
-    image_files = request.files.getlist('images')
-    if not image_files:
-        return jsonify({'error': 'No images provided'}), 400
+    # Get the zip file from the request
+    zip_file = request.files.get('dcm_zip')
+    
+    if not zip_file:
+        return jsonify({'error': 'No zip file provided'}), 400
 
-    # Save images to a temporary directory
+    print(f"Received file: {zip_file.filename}")
+    
+    # Save the uploaded file to a temporary location
+    temp_zip_path = os.path.join(tempfile.gettempdir(), zip_file.filename)
+    zip_file.save(temp_zip_path)
+
+    # Check if the file was saved correctly and has a non-zero size
+    if os.path.getsize(temp_zip_path) == 0:
+        print("File size is 0 after saving!")
+        return jsonify({'error': 'File size is 0'}), 400
+
+    # Create a temporary directory for extracted DICOM files and converted JPGs
     temp_dir = tempfile.mkdtemp()
-    for idx, image_file in enumerate(image_files):
-        image_path = os.path.join(temp_dir, f"{idx}.jpg")
-        image = Image.open(image_file).convert("RGB")
-        image.save(image_path)
+    dcm_dir = os.path.join(temp_dir, 'dicoms')
+    jpg_dir = os.path.join(temp_dir, 'jpgs')
+    os.makedirs(dcm_dir, exist_ok=True)
+    os.makedirs(jpg_dir, exist_ok=True)
+
+    # Extract the zip file
+    with zipfile.ZipFile(zip_file) as zip_ref:
+        zip_ref.extractall(dcm_dir)
+
+    # Load DICOM files
+    dicom_filenames = glob.glob(os.path.join(dcm_dir, '*.dcm'))
+
+    files = [pydicom.dcmread(fname) for fname in dicom_filenames if fname.endswith('.dcm')]
+
+    print(f"Loaded {len(files)} DICOM files.")
+
+    # Skip files without SliceLocation
+    slices = [f for f in files if hasattr(f, 'SliceLocation')]
+    print(f"Skipped {len(files) - len(slices)} files with no SliceLocation.")
+
+    # Sort slices based on SliceLocation
+    slices = sorted(slices, key=lambda s: s.SliceLocation)
+
+    # Sort filenames in the same order as slices
+    dicom_filenames = sorted(dicom_filenames, key=lambda fname: pydicom.dcmread(fname).SliceLocation)
+
+    # Prepare 3D array of pixel data
+    img_shape = list(slices[0].pixel_array.shape)
+    img_shape.append(len(slices))
+    img3d = np.zeros(img_shape)
+
+    # Fill the 3D array with pixel data
+    for i, s in enumerate(slices):
+        img2d = s.pixel_array
+        img3d[:, :, i] = img2d
+
+    # Normalize the 3D array
+    non_zero_values = img3d[img3d != 0]
+    min_val = int(np.min(non_zero_values)) + 100
+    max_val = int(0.67 * np.max(non_zero_values))
+    img3d_normalized = np.clip(img3d, min_val, max_val)
+    img3d_normalized = 255 * (img3d_normalized - min_val) / (max_val - min_val)
+    img3d_normalized = img3d_normalized.astype(np.uint8)
+
+    # Convert slices to JPG and save in jpg_dir
+    for idx in range(img3d_normalized.shape[2]):
+        image_array = img3d_normalized[:, :, idx]
+        image = Image.fromarray(image_array).convert("L")
+        image.save(os.path.join(jpg_dir, f"{idx}.jpg"), quality=100)
 
     # Initialize the inference state
     session_id = str(uuid.uuid4())
-    inference_state = predictor.init_state(video_path=temp_dir)
+    inference_state = predictor.init_state(video_path=jpg_dir)
     inference_states[session_id] = {
         'inference_state': inference_state,
         'temp_dir': temp_dir,
-        'n_frames': len(image_files)
+        'n_frames': len(os.listdir(jpg_dir))
     }
     set_or_reset_timer(session_id)
     return jsonify({'session_id': session_id})
