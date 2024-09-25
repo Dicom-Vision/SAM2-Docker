@@ -74,7 +74,7 @@ def file_too_large(e):
 @app.route('/initialize_video', methods=['POST'])
 def initialize_video():
     # Get the zip file from the request
-    zip_file = request.files.get('dcm_zip')
+    zip_file = request.files.get('data_binary')
     
     if not zip_file:
         return jsonify({'error': 'No zip file provided'}), 400

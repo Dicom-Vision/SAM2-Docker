@@ -38,7 +38,7 @@ def initialize_video():
     # Prepare the file to be sent in the request
     try:
         with open(zip_file_path, 'rb') as f:
-            files = {'dcm_zip': f}
+            files = {'data_binary': f}
             # Send the request to the server
             response = requests.post(f'{server_url}/initialize_video', files=files)
 
