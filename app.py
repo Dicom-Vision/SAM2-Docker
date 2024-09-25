@@ -27,6 +27,15 @@ scheduler.start()
 
 app = Flask(__name__)
 
+
+@app.route("/get_server_status", methods=["POST"])
+def get_server_status():
+    meta = request.json
+    # if not has_valid_credentials(meta["api_key"]):
+    #    return {"message": "invalid access code"}, 401
+
+    return {"status": "happily running"}, 200
+
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
 # Use bfloat16 precision
