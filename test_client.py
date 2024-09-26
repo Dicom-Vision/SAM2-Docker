@@ -41,7 +41,7 @@ def initialize_video():
             files = {'data_binary': f}
             # Send the request to the server
             response = requests.post(f'{server_url}/initialize_video', files=files)
-
+        print(response.content)
         # Handle the response
         if response.status_code == 200:
             print("Video initialized successfully!")

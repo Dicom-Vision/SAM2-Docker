@@ -27,15 +27,6 @@ scheduler.start()
 
 app = Flask(__name__)
 
-
-@app.route("/get_server_status", methods=["POST"])
-def get_server_status():
-    meta = request.json
-    # if not has_valid_credentials(meta["api_key"]):
-    #    return {"message": "invalid access code"}, 401
-
-    return {"status": "happily running"}, 200
-
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
 
 # Use bfloat16 precision
@@ -74,6 +65,16 @@ def set_or_reset_timer(session_id, timeout_seconds=300):
         args=[session_id],
         replace_existing=True
     )
+
+
+@app.route("/get_server_status", methods=["POST"])
+def get_server_status():
+    meta = request.json
+    # if not has_valid_credentials(meta["api_key"]):
+    #    return {"message": "invalid access code"}, 401
+
+    return {"status": "happily running"}, 200
+
 
 @app.errorhandler(413)
 def file_too_large(e):
@@ -118,14 +119,31 @@ def initialize_video():
     print(f"Loaded {len(files)} DICOM files.")
 
     # Skip files without SliceLocation
-    slices = [f for f in files if hasattr(f, 'SliceLocation')]
-    print(f"Skipped {len(files) - len(slices)} files with no SliceLocation.")
+    # slices = [f for f in files if hasattr(f, 'SliceLocation')]
+    # print(f"Skipped {len(files) - len(slices)} files with no SliceLocation.")
 
     # Sort slices based on SliceLocation
-    slices = sorted(slices, key=lambda s: s.SliceLocation)
+    # slices = sorted(slices, key=lambda s: s.SliceLocation)
 
     # Sort filenames in the same order as slices
-    dicom_filenames = sorted(dicom_filenames, key=lambda fname: pydicom.dcmread(fname).SliceLocation)
+    # dicom_filenames = sorted(dicom_filenames, key=lambda fname: pydicom.dcmread(fname).SliceLocation)
+
+    # Sort slices using SliceLocation if available, otherwise fallback to InstanceNumber or ImagePositionPatient
+    def sort_key(s):
+        if hasattr(s, 'SliceLocation'):
+            return s.SliceLocation
+        elif hasattr(s, 'InstanceNumber'):
+            return s.InstanceNumber
+        elif hasattr(s, 'ImagePositionPatient'):
+            return s.ImagePositionPatient[2]
+        else:
+            return float('inf')  # Put files with no relevant tag at the end
+
+    slices = sorted(files, key=sort_key)
+
+    # Sort filenames in the same order as slices
+    dicom_filenames = sorted(dicom_filenames, key=lambda fname: sort_key(pydicom.dcmread(fname)))
+
 
     # Prepare 3D array of pixel data
     img_shape = list(slices[0].pixel_array.shape)
