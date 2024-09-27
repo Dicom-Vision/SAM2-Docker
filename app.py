@@ -282,15 +282,7 @@ def convert_masks_to_nii(video_segments, n_frames):
     affine = np.eye(4)  # Identity affine matrix, replace with actual affine if available
     nii_image = nib.Nifti1Image(combined_mask, affine)
 
-    # Create a temporary file to save the NIfTI image
-    with NamedTemporaryFile(suffix='.nii.gz') as tmp_file:
-        nib.save(nii_image, tmp_file.name)  # Save to the temporary file
-
-        # Read the file content into memory
-        with open(tmp_file.name, 'rb') as f:
-            nii_file_content = f.read()
-
-    return nii_file_content
+    return nii_image
 
 
 @app.route('/propagate_masks', methods=['POST'])
@@ -330,17 +322,37 @@ def propagate_masks():
     # Clean up temporary files
     import shutil
     shutil.rmtree(temp_dir)
-    del inference_states[session_id] # TODO set a timer instead
 
     # Convert masks to .nii and return as binary content
-    nii_file_content = convert_masks_to_nii(video_segments, state_info['n_frames'])
+    nii_img = convert_masks_to_nii(video_segments, state_info['n_frames'])
+
+    # Create a temporary file for the NIfTI image
+    with tempfile.NamedTemporaryFile(suffix='.nii.gz', delete=False) as temp_file:
+        temp_file_path = temp_file.name
+        nib.save(nii_img, temp_file_path)
+
+     # Create a temporary ZIP file and add the NIfTI file to it
+    with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip_file:
+        temp_zip_file_path = temp_zip_file.name
+        with zipfile.ZipFile(temp_zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add the NIfTI file to the ZIP archive
+            zipf.write(temp_file_path, arcname='masks.nii.gz')
+
+    # Read the ZIP file content into memory
+    with open(temp_zip_file_path, 'rb') as f:
+        zip_file_content = f.read()
+
+    # Clean up the temporary files
+    import os
+    os.remove(temp_file_path)
+    os.remove(temp_zip_file_path)
 
     set_or_reset_timer(session_id)
     # Send the .nii file as a binary response
-    return send_file(BytesIO(nii_file_content),
+    return send_file(BytesIO(zip_file_content),
                      download_name='masks.nii.gz',
                      as_attachment=True,
-                     mimetype='application/gzip')
+                     mimetype='application/octet-stream')
 
 
 if __name__ == '__main__':
