@@ -83,6 +83,9 @@ def file_too_large(e):
 
 @app.route('/initialize_video', methods=['POST'])
 def initialize_video():
+    meta = request.form.to_dict()
+    session_id = meta.get('session_id', str(uuid.uuid4()))
+
     # Get the zip file from the request
     zip_file = request.files.get('data_binary')
     
@@ -170,7 +173,6 @@ def initialize_video():
         image.save(os.path.join(jpg_dir, f"{idx}.jpg"), quality=100)
 
     # Initialize the inference state
-    session_id = str(uuid.uuid4())
     inference_state = predictor.init_state(video_path=jpg_dir)
     inference_states[session_id] = {
         'inference_state': inference_state,
@@ -183,14 +185,15 @@ def initialize_video():
 @app.route('/add_points', methods=['POST'])
 def add_points():
     # Get data from the request JSON
-    data = request.get_json()
+    data = request.form.to_dict()
     if data is None:
         return jsonify({'error': 'No data provided'}), 400
     session_id = data.get('session_id')
-    frame_idx = data.get('frame_idx')
-    obj_id = data.get('obj_id')
-    points = data.get('points')
-    labels = data.get('labels')
+    frame_idx = int(data.get('frame_idx'))
+    obj_id = int(data.get('obj_id'))
+    points = json.loads(data.get('points'))
+    labels = json.loads(data.get('labels'))
+    print(data)
     if session_id is None or frame_idx is None or obj_id is None or points is None or labels is None:
         return jsonify({'error': 'All fields are required'}), 400
 
@@ -227,16 +230,32 @@ def add_points():
         temp_file_path = temp_file.name
         nib.save(nii_img, temp_file_path)
 
-    # Return the NIfTI file
-    # Read the file content into memory
-    with open(temp_file_path, 'rb') as f:
-        nii_file_content = f.read()
+    # Create a temporary ZIP file and add the NIfTI file to it
+    with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip_file:
+        temp_zip_file_path = temp_zip_file.name
+        with zipfile.ZipFile(temp_zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add the NIfTI file to the ZIP archive
+            zipf.write(temp_file_path, arcname='masks.nii.gz')
+
+    # Read the ZIP file content into memory
+    with open(temp_zip_file_path, 'rb') as f:
+        zip_file_content = f.read()
+
+    # Clean up the temporary files
+    import os
+    os.remove(temp_file_path)
+    os.remove(temp_zip_file_path)
 
     set_or_reset_timer(session_id)
-    return send_file(BytesIO(nii_file_content),
-                     download_name='masks.nii.gz',
-                     as_attachment=True,
-                     mimetype='application/gzip')
+
+    # Return the ZIP file
+    return send_file(
+        BytesIO(zip_file_content),
+        download_name='masks.zip',
+        as_attachment=True,
+        mimetype='application/octet-stream'
+        )
+                     
 
 
 def convert_masks_to_nii(video_segments, n_frames):
@@ -277,7 +296,7 @@ def convert_masks_to_nii(video_segments, n_frames):
 @app.route('/propagate_masks', methods=['POST'])
 def propagate_masks():
     # Get data from the request JSON
-    data = request.get_json()
+    data = request.form.to_dict()
     if data is None:
         return jsonify({'error': 'No data provided'}), 400
     session_id = data.get('session_id')
