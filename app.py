@@ -27,7 +27,7 @@ scheduler.start()
 
 app = Flask(__name__)
 
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
+app.config['MAX_CONTENT_LENGTH'] = 1000 * 1024 * 1024  # 1000 MB
 
 # Use bfloat16 precision
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
@@ -51,7 +51,7 @@ def delete_session(session_id):
         print(f"Session {session_id} deleted due to timeout.")
 
 # Function to set or reset a session timer
-def set_or_reset_timer(session_id, timeout_seconds=300):
+def set_or_reset_timer(session_id, timeout_seconds=3000):
     job_id = f"session_cleanup_{session_id}"
     # Remove the existing job for this session if it exists
     if scheduler.get_job(job_id):

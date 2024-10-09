@@ -92,6 +92,8 @@ docker run -it \
     -e DISPLAY=$DISPLAY \
     --gpus all \
     -p 5000:5000 \
+    --network=app_network \
+    --hostname sam2 \
     sam2:latest bash -c "cd /home/user/SAM2-Docker && flask run --host=0.0.0.0 --port=5000"
 ```
 
