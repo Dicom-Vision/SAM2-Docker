@@ -88,6 +88,14 @@ def initialize_video():
 
     # Get the zip file from the request
     zip_file = request.files.get('data_binary')
+
+    # get ww/wl values
+    ww = meta.get('ww', None)
+    wl = meta.get('wl', None)
+    if ww:
+        print(f"found WW value: ${ww}")
+    if wl:
+        print(f"found WW value: ${wl}")
     
     if not zip_file:
         return jsonify({'error': 'No zip file provided'}), 400
@@ -155,7 +163,21 @@ def initialize_video():
 
     # Fill the 3D array with pixel data
     for i, s in enumerate(slices):
-        img2d = s.pixel_array
+        # Normalize pixel data with slope and intercept
+        img2d = s.pixel_array.astype(np.float32)
+        slope = getattr(s, 'RescaleSlope', 1)
+        intercept = getattr(s, 'RescaleIntercept', 0)
+        img2d = img2d * slope + intercept
+
+        # Apply window width and level if they are provided
+        if ww and wl:
+            ww = float(ww)
+            wl = float(wl)
+            min_val = wl - ww / 2
+            max_val = wl + ww / 2
+            img2d = np.clip(img2d, min_val, max_val)
+            img2d = (img2d - min_val) / (max_val - min_val) * 255  # Scale to 0-255 for JPG
+
         img3d[:, :, i] = img2d
 
     # Normalize the 3D array
@@ -317,7 +339,7 @@ def propagate_masks():
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                 for i, out_obj_id in enumerate(out_obj_ids)
             }
-
+    print("total number of segments: ", video_segments)
 
     # Clean up temporary files
     import shutil
