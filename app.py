@@ -88,7 +88,7 @@ def initialize_video():
 
     # Get the zip file from the request
     zip_file = request.files.get('data_binary')
-
+    print("received params", meta)
     # get ww/wl values
     ww = meta.get('ww', None)
     wl = meta.get('wl', None)
@@ -215,7 +215,6 @@ def add_points():
     obj_id = int(data.get('obj_id'))
     points = json.loads(data.get('points'))
     labels = json.loads(data.get('labels'))
-    print(data)
     if session_id is None or frame_idx is None or obj_id is None or points is None or labels is None:
         return jsonify({'error': 'All fields are required'}), 400
 
