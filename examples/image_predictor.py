@@ -100,8 +100,9 @@ if __name__ == '__main__':
     root_path = os.path.dirname(sam2.__file__)
     root_path = os.path.dirname(root_path)
 
-    sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
-    model_cfg = "sam2_hiera_l.yaml"
+    sam2_checkpoint = f"{root_path}/checkpoints/sam2.1_hiera_large.pt"
+
+    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 

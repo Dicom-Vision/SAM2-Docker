@@ -1,5 +1,6 @@
 # Use an NVIDIA CUDA image as the base
 FROM nvidia/cuda:12.1.0-devel-ubuntu20.04
+# nvidia/cuda:12.6.3-cudnn-runtime-ubuntu20.04
 
 # Set up environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -48,8 +49,8 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
 WORKDIR /home/user
 
 
-RUN git clone https://github.com/facebookresearch/segment-anything-2 && \
-    cd segment-anything-2 && \
+RUN git clone https://github.com/facebookresearch/sam2 && \
+    cd sam2 && \
     python3 -m pip install -e . -v && \
     python3 -m pip install flask imageio[ffmpeg] nibabel APScheduler gunicorn pydicom && \
     python3 -m pip install -e ".[demo]" && \

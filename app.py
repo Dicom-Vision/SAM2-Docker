@@ -23,6 +23,7 @@ import glob
 inference_states = {}
 scheduler = BackgroundScheduler()
 scheduler.start()
+from hydra import compose, initialize
 
 
 app = Flask(__name__)
@@ -39,10 +40,10 @@ if torch.cuda.get_device_properties(0).major >= 8:
 
 root_path = os.path.dirname(os.path.dirname(sam2.__file__))
 # Load the SAM 2 model
-sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
-model_cfg = "sam2_hiera_l.yaml"
-predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+sam2_checkpoint = f"{root_path}/checkpoints/sam2.1_hiera_large.pt"
 
+model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
 # Helper function to delete session
 def delete_session(session_id):
