@@ -51,6 +51,7 @@ WORKDIR /home/user
 
 RUN git clone https://github.com/facebookresearch/sam2 && \
     cd sam2 && \
+    git checkout 2b90b9f5ceec907a1c18123530e92e794ad901a4 && \
     python3 -m pip install -e . -v && \
     python3 -m pip install flask imageio[ffmpeg] nibabel APScheduler gunicorn pydicom && \
     python3 -m pip install -e ".[demo]" && \
