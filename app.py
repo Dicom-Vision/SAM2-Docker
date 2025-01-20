@@ -23,7 +23,6 @@ import glob
 inference_states = {}
 scheduler = BackgroundScheduler()
 scheduler.start()
-from hydra import compose, initialize
 
 
 app = Flask(__name__)
@@ -40,10 +39,10 @@ if torch.cuda.get_device_properties(0).major >= 8:
 
 root_path = os.path.dirname(os.path.dirname(sam2.__file__))
 # Load the SAM 2 model
-sam2_checkpoint = f"{root_path}/checkpoints/sam2.1_hiera_large.pt"
-
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
+model_cfg = "sam2_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+
 
 # Helper function to delete session
 def delete_session(session_id):
@@ -182,16 +181,16 @@ def initialize_video():
         img3d[:, :, i] = img2d
 
     # Normalize the 3D array
-    non_zero_values = img3d[img3d != 0]
-    min_val = int(np.min(non_zero_values)) + 100
-    max_val = int(0.67 * np.max(non_zero_values))
-    img3d_normalized = np.clip(img3d, min_val, max_val)
-    img3d_normalized = 255 * (img3d_normalized - min_val) / (max_val - min_val)
-    img3d_normalized = img3d_normalized.astype(np.uint8)
+    # non_zero_values = img3d[img3d != 0]
+    # min_val = int(np.min(non_zero_values)) + 100
+    # max_val = int(0.67 * np.max(non_zero_values))
+    # img3d_normalized = np.clip(img3d, min_val, max_val)
+    # img3d_normalized = 255 * (img3d_normalized - min_val) / (max_val - min_val)
+    # img3d_normalized = img3d_normalized.astype(np.uint8)
 
     # Convert slices to JPG and save in jpg_dir
-    for idx in range(img3d_normalized.shape[2]):
-        image_array = img3d_normalized[:, :, idx]
+    for idx in range(img3d.shape[2]):
+        image_array = img3d[:, :, idx]
         image = Image.fromarray(image_array).convert("L")
         image.save(os.path.join(jpg_dir, f"{idx}.jpg"), quality=100)
 
@@ -230,18 +229,23 @@ def add_points():
     labels = np.array(labels, dtype=np.int32)
 
     # Add new points to the inference state
-    _, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
         inference_state=inference_state,
         frame_idx=frame_idx,
         obj_id=obj_id,
         points=points,
         labels=labels,
+        clear_old_points=False,
     )
 
     # Optionally return the mask for the current frame
     mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
     for i, obj_id in enumerate(out_obj_ids):
         mask = mask + ((out_mask_logits[i] > 0).cpu().numpy()[0] * (1+obj_id))
+    non_zero_count = np.count_nonzero(mask)
+
+    print(f"Number of non-zero values in the mask: {non_zero_count}")
+    print("logits_sum: ", np.sum(out_mask_logits.cpu().numpy()))
     # Convert the mask to a NIfTI file
     # Convert the mask to a NIfTI file
     affine = np.eye(4)  # You can set an appropriate affine if necessary
@@ -343,8 +347,10 @@ def propagate_masks():
 
     # Clean up temporary files
     import shutil
-    shutil.rmtree(temp_dir)
-
+    try: 
+        shutil.rmtree(temp_dir)
+    except FileNotFoundError:
+        pass
     # Convert masks to .nii and return as binary content
     nii_img = convert_masks_to_nii(video_segments, state_info['n_frames'])
 
