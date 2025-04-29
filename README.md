@@ -94,7 +94,7 @@ docker run -it \
     -p 5000:5000 \
     --network=app_network \
     --hostname sam2 \
-    sam2:latest bash -c "cd /home/user/SAM2-Docker && flask run --host=0.0.0.0 --port=5000"
+    sam22103:latest bash -c "cd /home/user/SAM2-Docker && flask run --host=0.0.0.0 --port=5000"
 ```
 
 ### Explanation:
@@ -130,7 +130,7 @@ docker run -it \
     -e DISPLAY=$DISPLAY \
     --gpus all \
     --network host \
-    -t sam2:latest bash -c "cd /home/user/SAM2-Docker && python3 test_client.py"
+    -t sam22103:latest bash -c "cd /home/user/SAM2-Docker && python3 test_client.py"
 ```
 
 ### Explanation:
