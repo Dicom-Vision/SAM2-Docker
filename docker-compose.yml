@@ -2,14 +2,25 @@ version: '3'
 
 services:
   web:
+    image: sam21l
     build: .
     container_name: flask_app
-    command: sh -c "cd /home/user/SAM2-Docker && gunicorn -b 0.0.0.0:5000 --workers=1 app:app"  # Run Flask directly
+    command: sh -c "cd /home/user/SAM2-Docker && gunicorn -b 0.0.0.0:5000 --workers=1 
+      --threads=1 
+      --timeout 300 
+      --graceful-timeout 300 
+      --keep-alive 30 
+      --worker-class=gthread app:app"  # Run Flask directly
     volumes:
+      - ./config.yaml:/home/user/sam2/sam2_configs/sam2.1_hiera_l.yaml:ro
       - ./SAM2-Docker:/home/user/SAM2-Docker  # Map current directory to /home/user in the container
       - ./app.py:/home/user/SAM2-Docker/app.py
     networks:
       - flask_network
+    restart: on-failure
+    environment:
+      - SAM2_REPO_ROOT=/home/user/sam2/sam2
+      - PYTHONPATH=/home/user/sam2/sam2:${PYTHONPATH}
     deploy:
       resources:
         reservations:
