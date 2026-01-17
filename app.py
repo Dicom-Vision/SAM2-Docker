@@ -273,6 +273,7 @@ def initialize_video():
             "inference_state": inference_state,
             "temp_dir": temp_dir,
             "n_frames": len(os.listdir(jpg_dir)),
+            "points_history": {},
         }
         set_or_reset_timer(session_id)
         return jsonify({"session_id": session_id})
@@ -283,6 +284,29 @@ def initialize_video():
             os._exit(1)  # Force container to exit immediately
         else:
             raise
+
+
+def flatten_points_labels(points, labels):
+    if not isinstance(points, list) or not isinstance(labels, list):
+        return None, None, None
+
+    if (
+        points
+        and isinstance(points[0], list)
+        and points[0]
+        and isinstance(points[0][0], (list, tuple))
+    ):
+        flat_points = [point for group in points for point in group]
+        flat_labels = [label for group in labels for label in group]
+        return flat_points, flat_labels, "nested"
+
+    return points, labels, "flat"
+
+
+def format_points_labels(points, labels, fmt):
+    if fmt == "nested":
+        return [points], [labels]
+    return points, labels
 
 
 @app.route("/add_points", methods=["POST"])
@@ -311,6 +335,24 @@ def add_points():
         return jsonify({"error": "Invalid session_id"}), 400
     inference_state = state_info["inference_state"]
 
+    flat_points, flat_labels, fmt = flatten_points_labels(points, labels)
+    if flat_points is None or flat_labels is None:
+        return jsonify({"error": "Invalid points or labels format"}), 400
+    if len(flat_points) != len(flat_labels):
+        return jsonify({"error": "Points and labels length mismatch"}), 400
+
+    points_history = state_info.setdefault("points_history", {})
+    history_key = (frame_idx, obj_id)
+    history_entry = points_history.get(history_key)
+    history_format = fmt
+    if history_entry:
+        history_format = history_entry.get("format", fmt)
+        updated_points = history_entry.get("points", []) + flat_points
+        updated_labels = history_entry.get("labels", []) + flat_labels
+    else:
+        updated_points = flat_points
+        updated_labels = flat_labels
+
     # Convert to numpy arrays
     points = np.array(points, dtype=np.float32)
     labels = np.array(labels, dtype=np.int32)
@@ -332,6 +374,12 @@ def add_points():
             os._exit(1)  # Force container to exit immediately
         else:
             raise
+
+    points_history[history_key] = {
+        "points": updated_points,
+        "labels": updated_labels,
+        "format": history_format,
+    }
 
     # Optionally return the mask for the current frame
     mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
@@ -371,6 +419,115 @@ def add_points():
     set_or_reset_timer(session_id)
 
     # Return the ZIP file
+    return send_file(
+        BytesIO(zip_file_content),
+        download_name="masks.zip",
+        as_attachment=True,
+        mimetype="application/octet-stream",
+    )
+
+
+@app.route("/undo_last_point", methods=["POST"])
+def undo_last_point():
+    data = request.form.to_dict()
+    if data is None:
+        return jsonify({"error": "No data provided"}), 400
+    session_id = data.get("session_id")
+    frame_idx = int(data.get("frame_idx"))
+    obj_id = int(data.get("obj_id"))
+    if session_id is None or frame_idx is None or obj_id is None:
+        return jsonify({"error": "session_id, frame_idx, and obj_id are required"}), 400
+
+    state_info = inference_states.get(session_id)
+    if state_info is None:
+        return jsonify({"error": "Invalid session_id"}), 400
+    inference_state = state_info["inference_state"]
+
+    points_history = state_info.get("points_history", {})
+    history_key = (frame_idx, obj_id)
+    history_entry = points_history.get(history_key)
+    if not history_entry or not history_entry.get("points"):
+        return jsonify({"error": "No points to undo"}), 400
+
+    history_entry["points"].pop()
+    history_entry["labels"].pop()
+    remaining_points = history_entry.get("points", [])
+    remaining_labels = history_entry.get("labels", [])
+    if len(remaining_points) != len(remaining_labels):
+        return jsonify({"error": "Point history is corrupted"}), 500
+
+    try:
+        if remaining_points:
+            fmt = history_entry.get("format", "flat")
+            formatted_points, formatted_labels = format_points_labels(
+                remaining_points, remaining_labels, fmt
+            )
+            points = np.array(formatted_points, dtype=np.float32)
+            labels = np.array(formatted_labels, dtype=np.int32)
+        else:
+            points = np.zeros((0, 2), dtype=np.float32)
+            labels = np.zeros((0,), dtype=np.int32)
+
+        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+            inference_state=inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            points=points,
+            labels=labels,
+            clear_old_points=True,
+        )
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            print("CUDA OOM detected, exiting to trigger Docker restart.")
+            sys.stdout.flush()
+            os._exit(1)  # Force container to exit immediately
+        else:
+            raise
+
+    if not remaining_points:
+        points_history.pop(history_key, None)
+        set_or_reset_timer(session_id)
+        return (
+            jsonify(
+                {
+                    "status": "cleared",
+                    "session_id": session_id,
+                    "frame_idx": frame_idx,
+                    "obj_id": obj_id,
+                }
+            ),
+            200,
+        )
+
+    mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
+    for i, obj_id in enumerate(out_obj_ids):
+        mask = mask + ((out_mask_logits[i] > 0).cpu().numpy()[0] * (1 + obj_id))
+    non_zero_count = np.count_nonzero(mask)
+
+    print(f"Number of non-zero values in the mask: {non_zero_count}")
+    print("logits_sum: ", np.sum(out_mask_logits.cpu().numpy()))
+    affine = np.eye(4)
+    nii_img = nib.Nifti1Image(mask.astype(np.float32), affine)
+
+    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as temp_file:
+        temp_file_path = temp_file.name
+        nib.save(nii_img, temp_file_path)
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_zip_file:
+        temp_zip_file_path = temp_zip_file.name
+        with zipfile.ZipFile(temp_zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(temp_file_path, arcname="masks.nii.gz")
+
+    with open(temp_zip_file_path, "rb") as f:
+        zip_file_content = f.read()
+
+    import os
+
+    os.remove(temp_file_path)
+    os.remove(temp_zip_file_path)
+
+    set_or_reset_timer(session_id)
+
     return send_file(
         BytesIO(zip_file_content),
         download_name="masks.zip",
