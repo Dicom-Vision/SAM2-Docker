@@ -20,6 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import pydicom
 import glob
+import shutil
 
 inference_states = {}
 scheduler = BackgroundScheduler()
@@ -67,11 +68,36 @@ model_cfg = "sam2_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
 
+def clear_session_resources(session_id, reason=None):
+    state_info = inference_states.pop(session_id, None)
+    if state_info is None:
+        return False
+
+    temp_dir = state_info.get("temp_dir")
+    if temp_dir:
+        try:
+            shutil.rmtree(temp_dir)
+        except FileNotFoundError:
+            pass
+
+    job_id = f"session_cleanup_{session_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    if reason:
+        print(f"Session {session_id} deleted {reason}.")
+
+    return True
+
+
 # Helper function to delete session
 def delete_session(session_id):
-    if session_id in inference_states:
-        del inference_states[session_id]
-        print(f"Session {session_id} deleted due to timeout.")
+    cleared = clear_session_resources(session_id, reason="due to timeout")
+    if not cleared:
+        return
 
 
 # Function to set or reset a session timer
@@ -98,6 +124,24 @@ def get_server_status():
     #    return {"message": "invalid access code"}, 401
 
     return {"status": "happily running"}, 200
+
+
+@app.route("/clear_session", methods=["POST"])
+def clear_session():
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict()
+    if data is None:
+        return jsonify({"error": "No data provided"}), 400
+    session_id = data.get("session_id")
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
+
+    cleared = clear_session_resources(session_id, reason="by request")
+    if not cleared:
+        return jsonify({"error": "Invalid session_id"}), 400
+
+    return jsonify({"status": "cleared", "session_id": session_id}), 200
 
 
 @app.errorhandler(413)
