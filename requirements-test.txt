@@ -1,0 +1,8 @@
+pytest
+flask
+numpy
+nibabel
+pydicom
+apscheduler
+pillow
+pytest-cov

@@ -325,6 +325,15 @@ def format_points_labels(points, labels, fmt):
     return points, labels
 
 
+def parse_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @app.route("/add_points", methods=["POST"])
 def add_points():
     # Get data from the request JSON
@@ -332,18 +341,29 @@ def add_points():
     if data is None:
         return jsonify({"error": "No data provided"}), 400
     session_id = data.get("session_id")
-    frame_idx = int(data.get("frame_idx"))
-    obj_id = int(data.get("obj_id"))
-    points = json.loads(data.get("points"))
-    labels = json.loads(data.get("labels"))
+    frame_idx_raw = data.get("frame_idx")
+    obj_id_raw = data.get("obj_id")
+    points_raw = data.get("points")
+    labels_raw = data.get("labels")
     if (
         session_id is None
-        or frame_idx is None
-        or obj_id is None
-        or points is None
-        or labels is None
+        or frame_idx_raw is None
+        or obj_id_raw is None
+        or points_raw is None
+        or labels_raw is None
     ):
         return jsonify({"error": "All fields are required"}), 400
+
+    frame_idx = parse_int(frame_idx_raw)
+    obj_id = parse_int(obj_id_raw)
+    if frame_idx is None or obj_id is None:
+        return jsonify({"error": "frame_idx and obj_id must be integers"}), 400
+
+    try:
+        points = json.loads(points_raw)
+        labels = json.loads(labels_raw)
+    except (TypeError, json.JSONDecodeError):
+        return jsonify({"error": "Invalid points or labels format"}), 400
 
     # Retrieve the inference state
     state_info = inference_states.get(session_id)
@@ -427,8 +447,6 @@ def add_points():
         zip_file_content = f.read()
 
     # Clean up the temporary files
-    import os
-
     os.remove(temp_file_path)
     os.remove(temp_zip_file_path)
 
@@ -449,10 +467,14 @@ def undo_last_point():
     if data is None:
         return jsonify({"error": "No data provided"}), 400
     session_id = data.get("session_id")
-    frame_idx = int(data.get("frame_idx"))
-    obj_id = int(data.get("obj_id"))
-    if session_id is None or frame_idx is None or obj_id is None:
+    frame_idx_raw = data.get("frame_idx")
+    obj_id_raw = data.get("obj_id")
+    if session_id is None or frame_idx_raw is None or obj_id_raw is None:
         return jsonify({"error": "session_id, frame_idx, and obj_id are required"}), 400
+    frame_idx = parse_int(frame_idx_raw)
+    obj_id = parse_int(obj_id_raw)
+    if frame_idx is None or obj_id is None:
+        return jsonify({"error": "frame_idx and obj_id must be integers"}), 400
 
     state_info = inference_states.get(session_id)
     if state_info is None:
@@ -536,8 +558,6 @@ def undo_last_point():
 
     with open(temp_zip_file_path, "rb") as f:
         zip_file_content = f.read()
-
-    import os
 
     os.remove(temp_file_path)
     os.remove(temp_zip_file_path)
@@ -644,8 +664,6 @@ def propagate_masks():
         zip_file_content = f.read()
 
     # Clean up the temporary files
-    import os
-
     os.remove(temp_file_path)
     os.remove(temp_zip_file_path)
 
