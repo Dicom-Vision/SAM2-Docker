@@ -1,13 +1,23 @@
 import os
 import io
 import numpy as np
-import torch
+try:
+    import torch
+except Exception:
+    torch = None
 from flask import Flask, request, jsonify, send_file
 from PIL import Image
-import sam2
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-from sam2.build_sam import build_sam2_video_predictor
+SAM2_ALLOW_NO_MODEL = os.environ.get("SAM2_ALLOW_NO_MODEL") == "1"
+try:
+    import sam2
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.build_sam import build_sam2_video_predictor
+    SAM2_AVAILABLE = True
+except Exception:
+    SAM2_AVAILABLE = False
+    if not SAM2_ALLOW_NO_MODEL:
+        raise
 import uuid
 import tempfile
 import os
@@ -26,8 +36,6 @@ inference_states = {}
 scheduler = BackgroundScheduler()
 scheduler.start()
 from functools import wraps
-import torch
-import os
 import sys
 
 
@@ -50,22 +58,29 @@ app = Flask(__name__)
 
 app.config["MAX_CONTENT_LENGTH"] = 1000 * 1024 * 1024  # 1000 MB
 
-# Use bfloat16 precision
-torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
+SAM2_SKIP_MODEL = os.environ.get("SAM2_SKIP_MODEL") == "1"
 
-# Enable TensorFloat-32 (if applicable)
-if torch.cuda.get_device_properties(0).major >= 8:
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+if torch is not None and torch.cuda.is_available() and not SAM2_SKIP_MODEL:
+    # Use bfloat16 precision
+    torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 
-root_path = os.path.dirname(os.path.dirname(sam2.__file__))
-# Load the SAM 2 model
-print(root_path)
-sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
-model_cfg = "sam2_hiera_l.yaml"
-# model_cfg = "sam2_hiera_b+.yaml"
-# model_cfg = "config.yaml"
-predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+    # Enable TensorFloat-32 (if applicable)
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+predictor = None
+if not SAM2_SKIP_MODEL:
+    if not SAM2_AVAILABLE or torch is None:
+        raise RuntimeError("SAM2 and torch are required to initialize the predictor.")
+    root_path = os.path.dirname(os.path.dirname(sam2.__file__))
+    # Load the SAM 2 model
+    print(root_path)
+    sam2_checkpoint = f"{root_path}/checkpoints/sam2_hiera_large.pt"
+    model_cfg = "sam2_hiera_l.yaml"
+    # model_cfg = "sam2_hiera_b+.yaml"
+    # model_cfg = "config.yaml"
+    predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
 
 def clear_session_resources(session_id, reason=None):
@@ -84,7 +99,7 @@ def clear_session_resources(session_id, reason=None):
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
 
-    if torch.cuda.is_available():
+    if torch is not None and torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     if reason:
