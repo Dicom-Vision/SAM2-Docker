@@ -6,5 +6,6 @@ pydicom
 apscheduler
 pillow
 pytest-cov
+requests
 imageio
 matplotlib
