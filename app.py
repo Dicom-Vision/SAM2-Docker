@@ -272,6 +272,7 @@ def initialize_video():
         inference_states[session_id] = {
             "inference_state": inference_state,
             "temp_dir": temp_dir,
+            "jpg_dir": jpg_dir,
             "n_frames": len(os.listdir(jpg_dir)),
             "points_history": {},
         }
@@ -587,8 +588,6 @@ def propagate_masks():
     if state_info is None:
         return jsonify({"error": "Invalid session_id"}), 400
     inference_state = state_info["inference_state"]
-    temp_dir = state_info["temp_dir"]
-
     # Propagate masks
     video_segments = {}
 
@@ -610,13 +609,6 @@ def propagate_masks():
             }
     # print("total number of segments: ", video_segments)
 
-    # Clean up temporary files
-    import shutil
-
-    try:
-        shutil.rmtree(temp_dir)
-    except FileNotFoundError:
-        pass
     # Convert masks to .nii and return as binary content
     nii_img = convert_masks_to_nii(video_segments, state_info["n_frames"])
 
@@ -650,6 +642,65 @@ def propagate_masks():
         as_attachment=True,
         mimetype="application/octet-stream",
     )
+
+
+@app.route("/undo_propagate", methods=["POST"])
+def undo_propagate():
+    data = request.form.to_dict()
+    if data is None:
+        return jsonify({"error": "No data provided"}), 400
+    session_id = data.get("session_id")
+    if session_id is None:
+        return jsonify({"error": "session_id is required"}), 400
+
+    state_info = inference_states.get(session_id)
+    if state_info is None:
+        return jsonify({"error": "Invalid session_id"}), 400
+
+    jpg_dir = state_info.get("jpg_dir")
+    if not jpg_dir:
+        return jsonify({"error": "No video data for session"}), 400
+
+    try:
+        inference_state = predictor.init_state(video_path=jpg_dir)
+        state_info["inference_state"] = inference_state
+
+        points_history = state_info.get("points_history", {})
+        reapplied = 0
+        for (frame_idx, obj_id) in sorted(points_history.keys()):
+            history_entry = points_history.get((frame_idx, obj_id))
+            if not history_entry:
+                continue
+            remaining_points = history_entry.get("points", [])
+            remaining_labels = history_entry.get("labels", [])
+            if not remaining_points:
+                continue
+            fmt = history_entry.get("format", "flat")
+            formatted_points, formatted_labels = format_points_labels(
+                remaining_points, remaining_labels, fmt
+            )
+            points = np.array(formatted_points, dtype=np.float32)
+            labels = np.array(formatted_labels, dtype=np.int32)
+
+            predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=frame_idx,
+                obj_id=obj_id,
+                points=points,
+                labels=labels,
+                clear_old_points=True,
+            )
+            reapplied += len(remaining_points)
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            print("CUDA OOM detected, exiting to trigger Docker restart.")
+            sys.stdout.flush()
+            os._exit(1)  # Force container to exit immediately
+        else:
+            raise
+
+    set_or_reset_timer(session_id)
+    return jsonify({"status": "undone", "session_id": session_id, "reapplied": reapplied}), 200
 
 
 if __name__ == "__main__":
