@@ -21,6 +21,8 @@ services:
     environment:
       - SAM2_REPO_ROOT=/home/user/sam2/sam2
       - PYTHONPATH=/home/user/sam2/sam2:${PYTHONPATH}
+      - SAM2_DEBUG_UNDO_SHAPES:1
+      - SAM2_DEBUG_PROPAGATE:1
     deploy:
       resources:
         reservations:

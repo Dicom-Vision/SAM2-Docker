@@ -126,11 +126,11 @@ To test the Flask server running inside Docker, use the following command to run
 ```bash
 docker run -it \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
-    -v $(pwd)/../SAM2-Docker:/home/user/SAM2-Docker \
+    -v $(pwd):/home/user/SAM2-Docker \
     -e DISPLAY=$DISPLAY \
     --gpus all \
     --network host \
-    -t sam22103:latest bash -c "cd /home/user/SAM2-Docker && python3 test_client.py"
+    -t sam2:latest bash -c "cd /home/user/SAM2-Docker && python3 test_client.py"
 ```
 
 ### Explanation:

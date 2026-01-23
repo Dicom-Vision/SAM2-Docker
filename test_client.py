@@ -1,6 +1,7 @@
 import glob
 import os
 import re
+import shutil
 import tempfile
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
@@ -283,7 +284,7 @@ def propagate_masks(session_id):
     if response.status_code == 200:
         # Initialize zip handling with response content
         zip_bytes = io.BytesIO(response.content)
-        nii_files_dir = os.path.join(output_nii_dir, session_id)
+        nii_files_dir = os.path.join(output_nii_dir, session_id, "propagate")
         os.makedirs(nii_files_dir, exist_ok=True)
 
         with zipfile.ZipFile(zip_bytes, "r") as zip_file:
@@ -301,6 +302,29 @@ def propagate_masks(session_id):
 
     else:
         print(f"Failed to propagate masks: {response.text}")
+
+
+def undo_propagate(session_id):
+    data = {"session_id": session_id}
+    response = requests.post(f"{server_url}/undo_propagate", data=data)
+
+    if response.status_code == 200:
+        zip_bytes = io.BytesIO(response.content)
+        nii_files_dir = os.path.join(output_nii_dir, session_id, "undo")
+        os.makedirs(nii_files_dir, exist_ok=True)
+
+        with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+            nifti_files_namelist = zip_file.namelist()
+            for nifti_filename in nifti_files_namelist:
+                output_path = os.path.join(nii_files_dir, nifti_filename)
+                with zip_file.open(nifti_filename) as nifti_data:
+                    with open(output_path, "wb") as f:
+                        f.write(nifti_data.read())
+
+        print(f"Masks undone successfully and saved to {nii_files_dir}")
+        create_overlay_video(session_id, nii_files_dir)
+    else:
+        print(f"Failed to undo propagation: {response.text}")
 
 
 def clear_session(session_id):
@@ -332,11 +356,8 @@ if __name__ == "__main__":
         if f.endswith(".jpg")
     ]
 
-    [
-        os.remove(f)
-        for f in glob.glob(os.path.join(output_nii_dir, "*"))
-        if os.path.isfile(f)
-    ]
+    if os.path.isdir(output_nii_dir):
+        shutil.rmtree(output_nii_dir)
     if os.path.isfile("output_video.mp4"):
         os.remove("output_video.mp4")
 
@@ -354,6 +375,7 @@ if __name__ == "__main__":
         # breakpoint()
         # Propagate masks
         propagate_masks(session_id)
+        undo_propagate(session_id)
         clear_session(session_id)
 
         # After propagating masks, you can use the saved voerlaid images to create a video using imageio

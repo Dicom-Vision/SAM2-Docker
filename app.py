@@ -1,18 +1,21 @@
 import os
 import io
 import numpy as np
+
 try:
     import torch
 except Exception:
     torch = None
 from flask import Flask, request, jsonify, send_file
 from PIL import Image
+
 SAM2_ALLOW_NO_MODEL = os.environ.get("SAM2_ALLOW_NO_MODEL") == "1"
 try:
     import sam2
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     from sam2.build_sam import build_sam2_video_predictor
+
     SAM2_AVAILABLE = True
 except Exception:
     SAM2_AVAILABLE = False
@@ -289,6 +292,7 @@ def initialize_video():
             "temp_dir": temp_dir,
             "jpg_dir": jpg_dir,
             "n_frames": len(os.listdir(jpg_dir)),
+            "frame_shape": slices[0].pixel_array.shape,
             "points_history": {},
         }
         set_or_reset_timer(session_id)
@@ -417,15 +421,10 @@ def add_points():
         "format": history_format,
     }
 
-    # Optionally return the mask for the current frame
+    # return the mask for the current frame
     mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
     for i, obj_id in enumerate(out_obj_ids):
         mask = mask + ((out_mask_logits[i] > 0).cpu().numpy()[0] * (1 + obj_id))
-    non_zero_count = np.count_nonzero(mask)
-
-    print(f"Number of non-zero values in the mask: {non_zero_count}")
-    print("logits_sum: ", np.sum(out_mask_logits.cpu().numpy()))
-    # Convert the mask to a NIfTI file
     # Convert the mask to a NIfTI file
     affine = np.eye(4)  # You can set an appropriate affine if necessary
     nii_img = nib.Nifti1Image(mask.astype(np.float32), affine)
@@ -483,29 +482,35 @@ def undo_last_point():
 
     points_history = state_info.get("points_history", {})
     history_key = (frame_idx, obj_id)
-    history_entry = points_history.get(history_key)
-    if not history_entry or not history_entry.get("points"):
+    history_entry = points_history.get(history_key) or {}
+    remaining_points = history_entry.get("points") or []
+    remaining_labels = history_entry.get("labels") or []
+    if not remaining_points:
         return jsonify({"error": "No points to undo"}), 400
-
-    history_entry["points"].pop()
-    history_entry["labels"].pop()
-    remaining_points = history_entry.get("points", [])
-    remaining_labels = history_entry.get("labels", [])
+    remaining_points.pop()
+    remaining_labels.pop()
     if len(remaining_points) != len(remaining_labels):
         return jsonify({"error": "Point history is corrupted"}), 500
+    cleared = not remaining_points
 
-    try:
-        if remaining_points:
-            fmt = history_entry.get("format", "flat")
-            formatted_points, formatted_labels = format_points_labels(
-                remaining_points, remaining_labels, fmt
+    if remaining_points:
+        nested = history_entry.get("format", "flat") == "nested"
+        for idx, (point, label) in enumerate(zip(remaining_points, remaining_labels)):
+            points_payload = [[point]] if nested else [point]
+            labels_payload = [[label]] if nested else [label]
+            points = np.array(points_payload, dtype=np.float32)
+            labels = np.array(labels_payload, dtype=np.int32)
+            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=frame_idx,
+                obj_id=obj_id,
+                points=points,
+                labels=labels,
+                clear_old_points=(idx == 0),
             )
-            points = np.array(formatted_points, dtype=np.float32)
-            labels = np.array(formatted_labels, dtype=np.int32)
-        else:
-            points = np.zeros((0, 2), dtype=np.float32)
-            labels = np.zeros((0,), dtype=np.int32)
-
+    else:
+        points = np.zeros((0, 2), dtype=np.float32)
+        labels = np.zeros((0,), dtype=np.int32)
         _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
             inference_state=inference_state,
             frame_idx=frame_idx,
@@ -514,36 +519,43 @@ def undo_last_point():
             labels=labels,
             clear_old_points=True,
         )
-    except RuntimeError as e:
-        if "CUDA out of memory" in str(e):
-            print("CUDA OOM detected, exiting to trigger Docker restart.")
-            sys.stdout.flush()
-            os._exit(1)  # Force container to exit immediately
-        else:
-            raise
 
-    if not remaining_points:
+    if cleared:
         points_history.pop(history_key, None)
-        set_or_reset_timer(session_id)
-        return (
-            jsonify(
-                {
-                    "status": "cleared",
-                    "session_id": session_id,
-                    "frame_idx": frame_idx,
-                    "obj_id": obj_id,
-                }
-            ),
-            200,
-        )
 
-    mask = np.zeros(out_mask_logits.cpu().numpy()[0].shape)
-    for i, obj_id in enumerate(out_obj_ids):
-        mask = mask + ((out_mask_logits[i] > 0).cpu().numpy()[0] * (1 + obj_id))
-    non_zero_count = np.count_nonzero(mask)
+    n_frames = state_info.get("n_frames")
 
-    print(f"Number of non-zero values in the mask: {non_zero_count}")
-    print("logits_sum: ", np.sum(out_mask_logits.cpu().numpy()))
+    logits = out_mask_logits.cpu().numpy()
+    frame_axis = None
+    if n_frames is not None and logits.ndim >= 3:
+        for axis, size in enumerate(logits.shape[:-2]):
+            if size == n_frames:
+                frame_axis = axis
+                break
+        if frame_axis is None:
+            for axis, size in enumerate(logits.shape):
+                if size == n_frames:
+                    frame_axis = axis
+                    break
+    if frame_axis is not None:
+        idx = frame_idx if 0 <= frame_idx < logits.shape[frame_axis] else 0
+        logits = np.take(logits, idx, axis=frame_axis)
+
+    if logits.ndim == 2:
+        logits = logits[None, None, :, :]
+    elif logits.ndim == 3:
+        logits = logits[:, None, :, :]
+    elif logits.ndim > 4:
+        logits = np.squeeze(logits)
+        if logits.ndim == 2:
+            logits = logits[None, None, :, :]
+        elif logits.ndim == 3:
+            logits = logits[:, None, :, :]
+
+    mask = np.zeros(logits[0].shape)
+    if not cleared:
+        for i, obj_id in enumerate(out_obj_ids):
+            mask = mask + ((logits[i, 0] > 0) * (1 + obj_id))
     affine = np.eye(4)
     nii_img = nib.Nifti1Image(mask.astype(np.float32), affine)
 
@@ -578,9 +590,6 @@ def convert_masks_to_nii(video_segments, n_frames):
     :param video_segments: Dictionary with frame indices as keys and masks as values
     :return: Binary content of the .nii.gz file
     """
-    # Assuming the shape of the reference image is the same as the masks
-    print("Number of frames: ", len(video_segments))
-
     # Extract the shape of the first mask for dimensions
     first_frame_masks = next(
         iter(video_segments.values())
@@ -607,6 +616,36 @@ def convert_masks_to_nii(video_segments, n_frames):
     return nii_image
 
 
+def load_frame_shape(jpg_dir):
+    jpg_files = sorted(glob.glob(os.path.join(jpg_dir, "*.jpg")))
+    if not jpg_files:
+        return None
+    with Image.open(jpg_files[0]) as img:
+        return np.array(img.convert("L")).shape
+
+
+def collect_video_segments(inference_state):
+    video_segments = {}
+    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+        inference_state
+    ):
+        video_segments[out_frame_idx] = {
+            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+            for i, out_obj_id in enumerate(out_obj_ids)
+        }
+    if video_segments:
+        start_frame_idx = min(video_segments.keys())
+        if start_frame_idx != 0:
+            for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                inference_state, start_frame_idx=start_frame_idx, reverse=True
+            ):
+                video_segments[out_frame_idx] = {
+                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                    for i, out_obj_id in enumerate(out_obj_ids)
+                }
+    return video_segments
+
+
 @cuda_oom_guard
 @app.route("/propagate_masks", methods=["POST"])
 def propagate_masks():
@@ -624,26 +663,7 @@ def propagate_masks():
         return jsonify({"error": "Invalid session_id"}), 400
     inference_state = state_info["inference_state"]
     # Propagate masks
-    video_segments = {}
-
-    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-        inference_state
-    ):
-        video_segments[out_frame_idx] = {
-            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-            for i, out_obj_id in enumerate(out_obj_ids)
-        }
-    start_frame_idx = min(video_segments.keys())
-    if start_frame_idx != 0:
-        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
-            inference_state, start_frame_idx=start_frame_idx, reverse=True
-        ):
-            video_segments[out_frame_idx] = {
-                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                for i, out_obj_id in enumerate(out_obj_ids)
-            }
-    # print("total number of segments: ", video_segments)
-
+    video_segments = collect_video_segments(inference_state)
     # Convert masks to .nii and return as binary content
     nii_img = convert_masks_to_nii(video_segments, state_info["n_frames"])
 
@@ -699,8 +719,9 @@ def undo_propagate():
         state_info["inference_state"] = inference_state
 
         points_history = state_info.get("points_history", {})
-        reapplied = 0
-        for (frame_idx, obj_id) in sorted(points_history.keys()):
+        video_segments = {}
+        n_frames = state_info.get("n_frames")
+        for frame_idx, obj_id in sorted(points_history.keys()):
             history_entry = points_history.get((frame_idx, obj_id))
             if not history_entry:
                 continue
@@ -715,7 +736,7 @@ def undo_propagate():
             points = np.array(formatted_points, dtype=np.float32)
             labels = np.array(formatted_labels, dtype=np.int32)
 
-            predictor.add_new_points_or_box(
+            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
                 inference_state=inference_state,
                 frame_idx=frame_idx,
                 obj_id=obj_id,
@@ -723,7 +744,42 @@ def undo_propagate():
                 labels=labels,
                 clear_old_points=True,
             )
-            reapplied += len(remaining_points)
+            if out_mask_logits is None or out_obj_ids is None:
+                continue
+
+            logits = out_mask_logits.cpu().numpy()
+            frame_axis = None
+            if n_frames is not None and logits.ndim >= 3:
+                for axis, size in enumerate(logits.shape[:-2]):
+                    if size == n_frames:
+                        frame_axis = axis
+                        break
+                if frame_axis is None:
+                    for axis, size in enumerate(logits.shape):
+                        if size == n_frames:
+                            frame_axis = axis
+                            break
+            if frame_axis is not None:
+                idx = frame_idx if 0 <= frame_idx < logits.shape[frame_axis] else 0
+                logits = np.take(logits, idx, axis=frame_axis)
+
+            if logits.ndim == 2:
+                logits = logits[None, None, :, :]
+            elif logits.ndim == 3:
+                logits = logits[:, None, :, :]
+            elif logits.ndim > 4:
+                logits = np.squeeze(logits)
+                if logits.ndim == 2:
+                    logits = logits[None, None, :, :]
+                elif logits.ndim == 3:
+                    logits = logits[:, None, :, :]
+
+            frame_masks = video_segments.get(frame_idx, {})
+            for i, out_obj_id in enumerate(out_obj_ids):
+                if i >= logits.shape[0]:
+                    break
+                frame_masks[out_obj_id] = logits[i] > 0
+            video_segments[frame_idx] = frame_masks
     except RuntimeError as e:
         if "CUDA out of memory" in str(e):
             print("CUDA OOM detected, exiting to trigger Docker restart.")
@@ -732,8 +788,39 @@ def undo_propagate():
         else:
             raise
 
+    if video_segments:
+        nii_img = convert_masks_to_nii(video_segments, state_info["n_frames"])
+    else:
+        frame_shape = state_info.get("frame_shape")
+        if frame_shape is None:
+            frame_shape = load_frame_shape(jpg_dir)
+        if frame_shape is None:
+            return jsonify({"error": "No masks available to undo"}), 400
+        combined_mask = np.zeros((state_info["n_frames"], *frame_shape), dtype=np.uint8)
+        nii_img = nib.Nifti1Image(combined_mask, np.eye(4))
+
+    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as temp_file:
+        temp_file_path = temp_file.name
+        nib.save(nii_img, temp_file_path)
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_zip_file:
+        temp_zip_file_path = temp_zip_file.name
+        with zipfile.ZipFile(temp_zip_file_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(temp_file_path, arcname="masks.nii.gz")
+
+    with open(temp_zip_file_path, "rb") as f:
+        zip_file_content = f.read()
+
+    os.remove(temp_file_path)
+    os.remove(temp_zip_file_path)
+
     set_or_reset_timer(session_id)
-    return jsonify({"status": "undone", "session_id": session_id, "reapplied": reapplied}), 200
+    return send_file(
+        BytesIO(zip_file_content),
+        download_name="masks.nii.gz",
+        as_attachment=True,
+        mimetype="application/octet-stream",
+    )
 
 
 if __name__ == "__main__":
