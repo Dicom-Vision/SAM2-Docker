@@ -7,7 +7,15 @@ import numpy as np
 import pytest
 
 
-def seed_session(app_state, session_id, temp_dir, jpg_dir=None, points_history=None):
+def seed_session(
+    app_state,
+    session_id,
+    temp_dir,
+    jpg_dir=None,
+    points_history=None,
+    n_frames=None,
+    frame_shape=None,
+):
     app_state.inference_states[session_id] = {
         "inference_state": {},
         "temp_dir": temp_dir,
@@ -15,6 +23,10 @@ def seed_session(app_state, session_id, temp_dir, jpg_dir=None, points_history=N
     }
     if jpg_dir is not None:
         app_state.inference_states[session_id]["jpg_dir"] = jpg_dir
+    if n_frames is not None:
+        app_state.inference_states[session_id]["n_frames"] = n_frames
+    if frame_shape is not None:
+        app_state.inference_states[session_id]["frame_shape"] = frame_shape
 
 
 class DummyForm:
@@ -297,8 +309,10 @@ def test_undo_last_point_clears_when_empty(client, app_state, tmp_path):
     )
 
     assert response.status_code == 200
-    data = response.get_json()
-    assert data["status"] == "cleared"
+    assert response.mimetype == "application/octet-stream"
+    zip_bytes = io.BytesIO(response.get_data())
+    with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+        assert "masks.nii.gz" in zip_file.namelist()
     assert (0, 0) not in app_state.inference_states[session_id]["points_history"]
 
 
@@ -404,11 +418,12 @@ def test_undo_last_point_oom_exit(app_state, monkeypatch, tmp_path):
     monkeypatch.setattr(os, "_exit", raise_exit)
 
     with app_state.app.test_client() as client:
-        with pytest.raises(SystemExit):
-            client.post(
-                "/undo_last_point",
-                data={"session_id": session_id, "frame_idx": "0", "obj_id": "0"},
-            )
+        response = client.post(
+            "/undo_last_point",
+            data={"session_id": session_id, "frame_idx": "0", "obj_id": "0"},
+        )
+
+    assert response.status_code == 500
 
 
 def test_undo_last_point_non_oom_raises(app_state, monkeypatch, tmp_path):
@@ -442,15 +457,21 @@ def test_undo_propagate_reapplies_points(client, app_state, fake_predictor, tmp_
         }
     }
     seed_session(
-        app_state, session_id, str(tmp_path), jpg_dir=str(jpg_dir), points_history=points_history
+        app_state,
+        session_id,
+        str(tmp_path),
+        jpg_dir=str(jpg_dir),
+        points_history=points_history,
+        n_frames=1,
     )
 
     response = client.post("/undo_propagate", data={"session_id": session_id})
 
     assert response.status_code == 200
-    data = response.get_json()
-    assert data["status"] == "undone"
-    assert data["reapplied"] == 2
+    assert response.mimetype == "application/octet-stream"
+    zip_bytes = io.BytesIO(response.get_data())
+    with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+        assert "masks.nii.gz" in zip_file.namelist()
     assert fake_predictor.calls[0][0] == "init_state"
 
 
@@ -874,6 +895,8 @@ def test_undo_propagate_skips_empty_history(app_state, monkeypatch, tmp_path):
         str(tmp_path),
         jpg_dir=str(jpg_dir),
         points_history=points_history,
+        n_frames=1,
+        frame_shape=(2, 2),
     )
 
     monkeypatch.setattr(app_state, "predictor", SimplePredictor())
@@ -883,8 +906,10 @@ def test_undo_propagate_skips_empty_history(app_state, monkeypatch, tmp_path):
         response = client.post("/undo_propagate", data={"session_id": session_id})
 
     assert response.status_code == 200
-    data = response.get_json()
-    assert data["reapplied"] == 0
+    assert response.mimetype == "application/octet-stream"
+    zip_bytes = io.BytesIO(response.get_data())
+    with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+        assert "masks.nii.gz" in zip_file.namelist()
 
 
 def test_undo_propagate_oom_exit(app_state, monkeypatch, tmp_path):
